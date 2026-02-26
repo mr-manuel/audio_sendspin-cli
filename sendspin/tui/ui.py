@@ -6,7 +6,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Self
 
-from aiosendspin.models.types import PlaybackStateType
+from aiosendspin.models.types import PlaybackStateType, RepeatMode
 from rich.console import Console, ConsoleOptions, RenderResult
 from rich.live import Live
 from rich.panel import Panel
@@ -71,6 +71,10 @@ class UIState:
     # Delay
     delay_ms: float = 0.0
 
+    # Repeat / Shuffle
+    repeat_mode: RepeatMode | None = None
+    shuffle: bool | None = None
+
     # Shortcut highlight
     highlighted_shortcut: str | None = None
     highlight_time: float = 0.0
@@ -132,8 +136,10 @@ class SendspinUI:
 
     def _build_now_playing_panel(self, *, expand: bool = False) -> Panel:
         """Build the now playing panel."""
-        # Show prompt when nothing is playing (5 lines total)
-        if not self._state.title:
+        is_active = self._state.playback_state is not None or self._state.title is not None
+
+        # Show prompt when nothing is playing
+        if not is_active:
             content = Table.grid()
             content.add_column()
             content.add_row("")
@@ -147,13 +153,7 @@ class SendspinUI:
             line2.append("g", style="bold cyan")
             line2.append(" to join an existing session", style="dim")
             content.add_row(line2)
-            line3 = Text()
-            line3.append("Press ", style="dim")
-            line3.append(",", style="bold cyan")
-            line3.append(" and ", style="dim")
-            line3.append(".", style="bold cyan")
-            line3.append(" to adjust audio delay", style="dim")
-            content.add_row(line3)
+            content.add_row("")
             content.add_row("")
             return Panel(content, title="Now Playing", border_style="blue", expand=expand)
 
@@ -162,9 +162,19 @@ class SendspinUI:
         info.add_column(style="dim", width=8)
         info.add_column()
 
-        info.add_row("Title:", Text(self._state.title, style="bold white"))
-        info.add_row("Artist:", Text(self._state.artist or "Unknown artist", style="cyan"))
-        info.add_row("Album:", Text(self._state.album or "Unknown album", style="dim"))
+        if self._state.title:
+            info.add_row("Title:", Text(self._state.title, style="bold white"))
+            info.add_row("Artist:", Text(self._state.artist or "Unknown artist", style="cyan"))
+            info.add_row("Album:", Text(self._state.album or "Unknown album", style="dim"))
+        else:
+            state_label = (
+                self._state.playback_state.value.capitalize()
+                if self._state.playback_state
+                else "Active"
+            )
+            info.add_row("Status:", Text(state_label, style="bold white"))
+            info.add_row("", Text("No metadata available", style="dim"))
+            info.add_row("")
 
         # Vertical container for info + shortcuts (5 lines total)
         content = Table.grid()
@@ -172,7 +182,7 @@ class SendspinUI:
         content.add_row(info)
         content.add_row("")  # Line 4: spacing
 
-        # Line 5: playback shortcuts (always show when track is loaded)
+        # Line 5: playback shortcuts (always show when active)
         space_label = "pause" if self._state.playback_state == PlaybackStateType.PLAYING else "play"
         shortcuts = Text()
         shortcuts.append("←", style=self._shortcut_style("prev"))
@@ -252,22 +262,31 @@ class SendspinUI:
         player_label = "Hardware:" if self._state.use_hardware_volume else "Player:"
         info.add_row(player_label, Text(pvol_text, style=pvol_style))
 
-        # Vertical container for info + shortcuts (5 lines total)
+        # Vertical container for info + shortcuts
         content = Table.grid()
         content.add_column()
         content.add_row(info)
-        content.add_row("")  # Line 3: spacing
-        content.add_row("")  # Line 4: spacing
+        content.add_row("")  # Spacing
 
-        # Line 5: volume shortcuts
-        shortcuts = Text()
-        shortcuts.append("↑", style=self._shortcut_style("up"))
-        shortcuts.append(" up  ", style="dim")
-        shortcuts.append("↓", style=self._shortcut_style("down"))
-        shortcuts.append(" down  ", style="dim")
-        shortcuts.append("m", style=self._shortcut_style("mute"))
-        shortcuts.append(" mute", style="dim")
-        content.add_row(shortcuts)
+        # Player volume shortcuts
+        player_sc = Text()
+        player_sc.append("↑", style=self._shortcut_style("up"))
+        player_sc.append("/", style="dim")
+        player_sc.append("↓", style=self._shortcut_style("down"))
+        player_sc.append(" player  ", style="dim")
+        player_sc.append("m", style=self._shortcut_style("mute"))
+        player_sc.append(" mute", style="dim")
+        content.add_row(player_sc)
+
+        # Group volume shortcuts
+        group_sc = Text()
+        group_sc.append("[", style=self._shortcut_style("group-down"))
+        group_sc.append("/", style="dim")
+        group_sc.append("]", style=self._shortcut_style("group-up"))
+        group_sc.append(" group  ", style="dim")
+        group_sc.append("M", style=self._shortcut_style("group-mute"))
+        group_sc.append(" mute", style="dim")
+        content.add_row(group_sc)
 
         return Panel(content, title="Volume", border_style="magenta", expand=expand)
 
@@ -344,6 +363,121 @@ class SendspinUI:
 
         return Panel(content, title="Select Server", border_style="cyan")
 
+    def _build_playback_panel(self, *, expand: bool = False, min_info_rows: int = 0) -> Panel:
+        """Build the playback panel with repeat/shuffle status."""
+        info = Table.grid(padding=(0, 2))
+        info.add_column(style="dim", width=8)
+        info.add_column()
+
+        repeat = self._state.repeat_mode
+        info.add_row(
+            "Repeat:",
+            Text(repeat.value if repeat is not None else "—", style="cyan" if repeat else "dim"),
+        )
+
+        shuffle = self._state.shuffle
+        if shuffle is not None:
+            shuffle_text = Text("on" if shuffle else "off", style="cyan")
+        else:
+            shuffle_text = Text("—", style="dim")
+        info.add_row("Shuffle:", shuffle_text)
+        info_rows = 2
+
+        content = Table.grid()
+        content.add_column()
+        content.add_row(info)
+        for _ in range(max(0, min_info_rows - info_rows)):
+            content.add_row("")
+        content.add_row("")  # Spacing before shortcuts
+
+        # Shortcuts
+        shortcuts = Text()
+        shortcuts.append("r", style=self._shortcut_style("repeat"))
+        shortcuts.append(" repeat  ", style="dim")
+        shortcuts.append("x", style=self._shortcut_style("shuffle"))
+        shortcuts.append(" shuffle", style="dim")
+        content.add_row(shortcuts)
+
+        return Panel(content, title="Playback", border_style="magenta", expand=expand)
+
+    def _build_stream_quality_panel(self, *, expand: bool = False, min_info_rows: int = 0) -> Panel:
+        """Build the stream quality panel."""
+        info = Table.grid(padding=(0, 1))
+        info.add_column(style="dim")
+        info.add_column()
+
+        if self._state.audio_sample_rate > 0:
+            codec_label = (self._state.audio_codec or "PCM").upper()
+            info.add_row("Codec:", Text(codec_label, style="cyan"))
+            rate_khz = self._state.audio_sample_rate / 1000
+            info.add_row("Rate:", Text(f"{rate_khz:.1f}kHz", style="cyan"))
+            info.add_row("Depth:", Text(f"{self._state.audio_bit_depth}bit", style="cyan"))
+            ch_label = (
+                "Stereo" if self._state.audio_channels == 2 else f"{self._state.audio_channels}ch"
+            )
+            info.add_row("Channels:", Text(ch_label, style="cyan"))
+        else:
+            info.add_row("Codec:", Text("—", style="dim"))
+            info.add_row("Rate:", Text("—", style="dim"))
+            info.add_row("Depth:", Text("—", style="dim"))
+            info.add_row("Channels:", Text("—", style="dim"))
+
+        delay = self._state.delay_ms
+        delay_str = f"+{delay:.0f}ms" if delay >= 0 else f"{delay:.0f}ms"
+        info.add_row("Delay:", Text(delay_str, style="cyan"))
+        info_rows = 5
+
+        content = Table.grid()
+        content.add_column()
+        content.add_row(info)
+        for _ in range(max(0, min_info_rows - info_rows)):
+            content.add_row("")
+        content.add_row("")  # Spacing before shortcuts
+
+        # Shortcuts
+        shortcuts = Text()
+        shortcuts.append(",", style=self._shortcut_style("delay-"))
+        shortcuts.append("/", style="dim")
+        shortcuts.append(".", style=self._shortcut_style("delay+"))
+        shortcuts.append(" adjust delay", style="dim")
+        content.add_row(shortcuts)
+
+        return Panel(content, title="Stream Quality", border_style="yellow", expand=expand)
+
+    def _build_server_panel(self, *, expand: bool = False, min_info_rows: int = 0) -> Panel:
+        """Build the server panel."""
+        info = Table.grid(padding=(0, 1))
+        info.add_column(style="dim")
+        info.add_column()
+
+        if self._state.connected and self._state.server_url:
+            url = self._state.server_url
+            host = url.split("://", 1)[-1].split("/", 1)[0]
+            host = host.strip("[]")
+            info.add_row("Status:", Text("Connected", style="green bold"))
+            info.add_row("Host:", Text(host, style="cyan"))
+            if self._state.group_name:
+                info.add_row("Group:", Text(self._state.group_name, style="cyan"))
+        else:
+            info.add_row("Status:", Text("Disconnected", style="red bold"))
+            info.add_row("Host:", Text(self._state.status_message, style="yellow"))
+        info_rows = 2 + (1 if self._state.group_name else 0)
+
+        content = Table.grid()
+        content.add_column()
+        content.add_row(info)
+        for _ in range(max(0, min_info_rows - info_rows)):
+            content.add_row("")
+        content.add_row("")  # Spacing before shortcuts
+
+        # Shortcuts
+        shortcuts = Text()
+        shortcuts.append("s", style=self._shortcut_style("server"))
+        shortcuts.append(" change server", style="dim")
+        content.add_row(shortcuts)
+
+        return Panel(content, title="Server", border_style="yellow", expand=expand)
+
     def _build_layout(self) -> Table:
         """Build the complete UI layout."""
         # Get terminal width and leave 1 char margin to prevent wrapping
@@ -358,95 +492,52 @@ class SendspinUI:
             layout.add_row(self._build_server_selector_panel())
             return layout
 
-        # Top row: Now Playing + Volume
-        top_row = Table.grid(expand=True)
-        top_row.add_column(ratio=2)
-        top_row.add_column(ratio=1)
-        top_row.add_row(
-            self._build_now_playing_panel(expand=True),
-            self._build_volume_panel(expand=True),
-        )
-        layout.add_row(top_row)
+        narrow = width < 80
+
+        if narrow:
+            # Stacked layout: all panels full-width
+            layout.add_row(self._build_now_playing_panel(expand=True))
+            layout.add_row(self._build_volume_panel(expand=True))
+        else:
+            # Wide layout: Now Playing + Volume side by side
+            top_row = Table.grid(expand=True)
+            top_row.add_column(ratio=2)
+            top_row.add_column(ratio=1)
+            top_row.add_row(
+                self._build_now_playing_panel(expand=True),
+                self._build_volume_panel(expand=True),
+            )
+            layout.add_row(top_row)
 
         # Progress bar
         layout.add_row(self._build_progress_bar(expand=True))
 
-        # Status line at bottom
-        layout.add_row(self._build_status_line())
+        if narrow:
+            # Stacked layout: panels full-width
+            layout.add_row(self._build_playback_panel(expand=True))
+            layout.add_row(self._build_stream_quality_panel(expand=True))
+            layout.add_row(self._build_server_panel(expand=True))
+        else:
+            # Wide layout: Playback + Stream Quality + Server side by side, equal height
+            min_rows = 5  # max of stream quality (5), server (2-3), playback (2)
+            bottom_row = Table.grid(expand=True)
+            bottom_row.add_column(ratio=1)
+            bottom_row.add_column(ratio=1)
+            bottom_row.add_column(ratio=1)
+            bottom_row.add_row(
+                self._build_playback_panel(expand=True, min_info_rows=min_rows),
+                self._build_stream_quality_panel(expand=True, min_info_rows=min_rows),
+                self._build_server_panel(expand=True, min_info_rows=min_rows),
+            )
+            layout.add_row(bottom_row)
+
+        # Quit shortcut below boxes
+        quit_line = Text(justify="right")
+        quit_line.append("q", style=self._shortcut_style("quit"))
+        quit_line.append(" quit  ", style="dim")
+        layout.add_row(quit_line)
 
         return layout
-
-    def _build_status_line(self) -> Table:
-        """Build the status line at the bottom."""
-        # Right side: delay shortcuts + server selector + quit shortcut
-        right = Text()
-        right.append(",", style=self._shortcut_style("delay-"))
-        right.append("/", style="dim")
-        right.append(".", style=self._shortcut_style("delay+"))
-        right.append(" delay  ", style="dim")
-        right.append("s", style=self._shortcut_style("server"))
-        right.append(" server  ", style="dim")
-        right.append("q", style=self._shortcut_style("quit"))
-        right.append(" quit", style="dim")
-
-        # Left side: connection status + format + delay
-        indent = "  "
-        left = Text()
-        if self._state.connected and self._state.server_url:
-            # Extract host from ws://host:port/path
-            url = self._state.server_url
-            host = url.split("://", 1)[-1].split("/", 1)[0].split(":")[0]
-            host = host.strip("[]")  # Remove brackets from IPv6
-            if self._state.group_name:
-                base = f"Connected to {self._state.group_name} at {host}"
-            else:
-                base = f"Connected to {host}"
-
-            # Build info segments (each treated as atomic for wrapping)
-            info_segments: list[str] = []
-            if self._state.audio_sample_rate > 0:
-                rate_khz = self._state.audio_sample_rate / 1000
-                ch_label = (
-                    "stereo"
-                    if self._state.audio_channels == 2
-                    else f"{self._state.audio_channels}ch"
-                )
-                codec_label = (self._state.audio_codec or "PCM").upper()
-                info_segments.append(
-                    f" · {codec_label} {rate_khz:.1f}kHz/{self._state.audio_bit_depth}bit {ch_label}"
-                )
-            delay = self._state.delay_ms
-            delay_str = f"+{delay:.0f}ms" if delay >= 0 else f"{delay:.0f}ms"
-            info_segments.append(f" · Delay: {delay_str}")
-
-            # Greedily fit segments on first line, overflow to indented second line
-            available = self._console.width - len(right) - 4
-            first_line = base
-            line_len = len(indent) + len(first_line)
-            overflow_segments: list[str] = []
-            for seg in info_segments:
-                if not overflow_segments and line_len + len(seg) <= available:
-                    first_line += seg
-                    line_len += len(seg)
-                else:
-                    overflow_segments.append(seg)
-
-            left.append(indent)
-            left.append(first_line, style="dim")
-            if overflow_segments:
-                parts = [seg.removeprefix(" · ") for seg in overflow_segments]
-                left.append(f"\n{indent}· {' · '.join(parts)}", style="dim")
-        else:
-            left.append(indent)
-            left.append(self._state.status_message, style="dim yellow")
-
-        # Use grid for left/right alignment with padding column
-        line = Table.grid(expand=True)
-        line.add_column(ratio=1)
-        line.add_column(justify="right")
-        line.add_column(width=2)  # Right padding to align with panel interior
-        line.add_row(left, right, "")
-        return line
 
     def add_event(self, _message: str) -> None:
         """Add an event (no-op, events panel removed)."""
@@ -545,6 +636,16 @@ class SendspinUI:
     def set_delay(self, delay_ms: float) -> None:
         """Update the delay display."""
         self._state.delay_ms = delay_ms
+        self.refresh()
+
+    def set_repeat_shuffle(
+        self,
+        repeat_mode: RepeatMode | None,
+        shuffle: bool | None,
+    ) -> None:
+        """Update repeat mode and shuffle state."""
+        self._state.repeat_mode = repeat_mode
+        self._state.shuffle = shuffle
         self.refresh()
 
     def show_server_selector(self, servers: list[DiscoveredServer]) -> None:
