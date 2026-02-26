@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from urllib.parse import urlparse
 from dataclasses import dataclass, field
 from typing import Self
 
@@ -190,9 +191,7 @@ class SendspinUI:
         shortcuts.append("<space>", style=self._shortcut_style("space"))
         shortcuts.append(f" {space_label}  ", style="dim")
         shortcuts.append("→", style=self._shortcut_style("next"))
-        shortcuts.append(" next  ", style="dim")
-        shortcuts.append("g", style=self._shortcut_style("switch"))
-        shortcuts.append(" change group", style="dim")
+        shortcuts.append(" next", style="dim")
         content.add_row(shortcuts)
 
         return Panel(content, title="Now Playing", border_style="blue", expand=expand)
@@ -398,7 +397,7 @@ class SendspinUI:
         shortcuts.append(" shuffle", style="dim")
         content.add_row(shortcuts)
 
-        return Panel(content, title="Playback", border_style="magenta", expand=expand)
+        return Panel(content, title="Playback", border_style="yellow", expand=expand)
 
     def _build_stream_quality_panel(self, *, expand: bool = False, min_info_rows: int = 0) -> Panel:
         """Build the stream quality panel."""
@@ -442,7 +441,7 @@ class SendspinUI:
         shortcuts.append(" adjust delay", style="dim")
         content.add_row(shortcuts)
 
-        return Panel(content, title="Stream Quality", border_style="yellow", expand=expand)
+        return Panel(content, title="Stream", border_style="yellow", expand=expand)
 
     def _build_server_panel(self, *, expand: bool = False, min_info_rows: int = 0) -> Panel:
         """Build the server panel."""
@@ -451,30 +450,37 @@ class SendspinUI:
         info.add_column()
 
         if self._state.connected and self._state.server_url:
-            url = self._state.server_url
-            host = url.split("://", 1)[-1].split("/", 1)[0]
-            host = host.strip("[]")
+            parsed = urlparse(self._state.server_url)
+            host = parsed.hostname or ""
+            port = str(parsed.port) if parsed.port else ""
+            path = parsed.path or "/"
             info.add_row("Status:", Text("Connected", style="green bold"))
             info.add_row("Host:", Text(host, style="cyan"))
+            if port:
+                info.add_row("Port:", Text(port, style="cyan"))
+            info.add_row("Path:", Text(path, style="cyan"))
             if self._state.group_name:
                 info.add_row("Group:", Text(self._state.group_name, style="cyan"))
+            info_rows = 3 + (1 if port else 0) + (1 if self._state.group_name else 0)
         else:
             info.add_row("Status:", Text("Disconnected", style="red bold"))
             info.add_row("Host:", Text(self._state.status_message, style="yellow"))
-        info_rows = 2 + (1 if self._state.group_name else 0)
+            info_rows = 2
 
         content = Table.grid()
         content.add_column()
         content.add_row(info)
         for _ in range(max(0, min_info_rows - info_rows)):
             content.add_row("")
-        content.add_row("")  # Spacing before shortcuts
-
         # Shortcuts
-        shortcuts = Text()
-        shortcuts.append("s", style=self._shortcut_style("server"))
-        shortcuts.append(" change server", style="dim")
-        content.add_row(shortcuts)
+        shortcut_group = Text()
+        shortcut_group.append("g", style=self._shortcut_style("switch"))
+        shortcut_group.append(" change group", style="dim")
+        content.add_row(shortcut_group)
+        shortcut_server = Text()
+        shortcut_server.append("s", style=self._shortcut_style("server"))
+        shortcut_server.append(" change server", style="dim")
+        content.add_row(shortcut_server)
 
         return Panel(content, title="Server", border_style="yellow", expand=expand)
 
