@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import os
 import socket
 import sys
 import traceback
@@ -598,8 +599,17 @@ async def _run_client_mode(args: argparse.Namespace) -> int:
     if args.hook_stop is None:
         args.hook_stop = settings.hook_stop
 
-    # Set up logging with resolved log level
-    logging.basicConfig(level=getattr(logging, args.log_level))
+    # Set up logging: daemon uses stderr, TUI writes to sendspin.log
+    # so log output doesn't interfere with the Rich display.
+    log_level = getattr(logging, args.log_level)
+    if is_daemon:
+        logging.basicConfig(level=log_level)
+    else:
+        if log_level > logging.DEBUG:
+            log_level = logging.WARNING
+        handler = logging.FileHandler(os.path.join(os.getcwd(), "sendspin.log"), delay=True)
+        handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+        logging.basicConfig(level=log_level, handlers=[handler])
 
     if args.hardware_volume and not await hw_volume_check_available():
         LOGGER.warning("PulseAudio server not reachable, falling back to software volume control")

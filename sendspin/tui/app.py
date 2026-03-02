@@ -257,11 +257,6 @@ class SendspinApp:
             )
             return 1
 
-        # In interactive mode with UI, suppress logs to avoid interfering with display
-        # Only show WARNING and above unless explicitly set to DEBUG
-        if logging.getLogger().level != logging.DEBUG:
-            logging.getLogger().setLevel(logging.WARNING)
-
         # Store reference to current task so it can be cancelled on shutdown
         main_task = asyncio.current_task()
         assert main_task is not None
