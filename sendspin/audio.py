@@ -277,7 +277,7 @@ class _QueuedChunk:
 
     server_timestamp_us: int
     """Server timestamp when this chunk should start playing."""
-    audio_data: bytes
+    audio_data: bytes | bytearray
     """Raw PCM audio bytes."""
 
 
@@ -1240,7 +1240,7 @@ class AudioPlayer:
             self._insert_every_n_frames = interval_frames
             self._drop_every_n_frames = 0
 
-    def submit(self, server_timestamp_us: int, payload: bytes) -> None:  # noqa: PLR0915
+    def submit(self, server_timestamp_us: int, payload: bytes | bytearray) -> None:  # noqa: PLR0915
         """
         Queue an audio payload for playback, intelligently handling gaps and overlaps.
 
