@@ -20,12 +20,20 @@ from dataclasses import dataclass
 from enum import Enum, auto
 from typing import TYPE_CHECKING, Final, Protocol, cast
 
-import numpy as np
 import sounddevice
 from aiosendspin.client.time_sync import SendspinTimeFilter
 from aiosendspin.models.player import SupportedAudioFormat
 from aiosendspin.models.types import AudioCodec
 from sounddevice import CallbackFlags
+
+try:
+    from sendspin._volume import apply_volume as _c_apply_volume
+except ImportError:
+    _c_apply_volume = None
+    logging.getLogger(__name__).info(
+        "C volume extension unavailable; falling back to numpy (slower)"
+    )
+    import numpy as np
 
 if TYPE_CHECKING:
     from aiosendspin.client import AudioFormat, PCMFormat
@@ -687,7 +695,7 @@ class AudioPlayer:
             self._current_chunk_offset = 0
 
         # Apply volume scaling to the output
-        self._apply_volume(output_buffer, bytes_needed)
+        self._apply_volume(output_buffer)
 
         # Track callback execution time for performance monitoring
         callback_end_us = self._now_us()
@@ -1023,7 +1031,7 @@ class AudioPlayer:
         if num_bytes > 0:
             output_buffer[offset : offset + num_bytes] = b"\x00" * num_bytes
 
-    def _apply_volume(self, output_buffer: memoryview, num_bytes: int) -> None:
+    def _apply_volume(self, output_buffer: memoryview) -> None:
         """
         Apply volume scaling to the output buffer.
 
@@ -1033,8 +1041,8 @@ class AudioPlayer:
         volume = self._volume
 
         if muted or volume == 0:
-            # Fill with silence using numpy
-            self._fill_silence(output_buffer, 0, num_bytes)
+            # Fill with silence
+            self._fill_silence(output_buffer, 0, len(output_buffer))
             return
 
         if volume == 100:
@@ -1044,12 +1052,16 @@ class AudioPlayer:
         amplitude = (volume / 100.0) ** 1.5
 
         bit_depth = self._format.bit_depth if self._format else 16
+        num_bytes = len(output_buffer)
 
-        if bit_depth == 24:
-            # 24-bit is packed (3 bytes/sample) - convert to int32 for scaling
+        if _c_apply_volume is not None:
+            # Fast path: fixed-point volume scaling via C extension
+            bytes_per_sample = bit_depth // 8
+            scale = int(amplitude * 4294967296)  # 2**32 fixed-point
+            _c_apply_volume(output_buffer, bytes_per_sample, scale)
+        elif bit_depth == 24:
             self._apply_volume_24bit(output_buffer, num_bytes, amplitude)
         else:
-            # 16, 32-bit have native signed numpy dtypes
             if bit_depth == 32:
                 dtype_str = "int32"
                 clip_min, clip_max = -2147483648, 2147483647
@@ -1064,37 +1076,28 @@ class AudioPlayer:
     def _apply_volume_24bit(
         self, output_buffer: memoryview, num_bytes: int, amplitude: float
     ) -> None:
-        """Apply volume scaling to packed 24-bit audio data."""
+        """Apply volume scaling to packed 24-bit audio data (numpy fallback)."""
+
         num_samples = num_bytes // 3
         if num_samples == 0:
             return
 
-        # Read packed 24-bit samples and reshape to (N, 3) for vectorized unpacking
         raw = np.frombuffer(output_buffer, dtype=np.uint8, count=num_bytes).reshape(-1, 3)
-
-        # Unpack 3 bytes per sample to int32 (little-endian: low | mid<<8 | high<<16)
         samples_i32 = (
             raw[:, 0].astype(np.int32)
             | (raw[:, 1].astype(np.int32) << 8)
             | (raw[:, 2].astype(np.int32) << 16)
         )
-
-        # Sign extend from 24-bit to 32-bit (if bit 23 is set, set bits 24-31)
         samples_i32 = np.where(
             samples_i32 & 0x800000, samples_i32 | np.int32(-0x1000000), samples_i32
         )
-
-        # Apply volume scaling
         scaled = np.clip(samples_i32.astype(np.float64) * amplitude, -8388608, 8388607).astype(
             np.int32
         )
-
-        # Pack back to 24-bit (extract bytes using vectorized shifts)
         result = np.empty((num_samples, 3), dtype=np.uint8)
         result[:, 0] = scaled & 0xFF
         result[:, 1] = (scaled >> 8) & 0xFF
         result[:, 2] = (scaled >> 16) & 0xFF
-
         output_buffer[:num_bytes] = result.tobytes()
 
     def _compute_and_set_loop_start(self, server_timestamp_us: int) -> None:
