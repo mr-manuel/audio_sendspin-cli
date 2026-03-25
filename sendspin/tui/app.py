@@ -36,7 +36,7 @@ from aiosendspin.models.types import (
     UndefinedField,
 )
 
-from sendspin.audio import AudioDevice, detect_supported_audio_formats
+from sendspin.audio_devices import AudioDevice, detect_supported_audio_formats
 from sendspin.audio_connector import AudioStreamHandler
 from sendspin.discovery import ServiceDiscovery, DiscoveredServer
 from sendspin.hooks import run_hook
@@ -288,7 +288,7 @@ class SendspinApp:
             self._state.player_muted = self._audio_handler.muted
 
             # Detect supported audio formats for the output device
-            supported_formats = detect_supported_audio_formats(args.audio_device.index)
+            supported_formats = detect_supported_audio_formats(args.audio_device)
             if args.preferred_format is not None:
                 supported_formats = [f for f in supported_formats if f != args.preferred_format]
                 supported_formats.insert(0, args.preferred_format)

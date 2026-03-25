@@ -29,7 +29,7 @@ from sendspin.volume_controller import VolumeController
 if TYPE_CHECKING:
     from aiosendspin.models.player import SupportedAudioFormat
 
-    from sendspin.audio import AudioDevice
+    from sendspin.audio_devices import AudioDevice
 
 LOGGER = logging.getLogger(__name__)
 
@@ -64,31 +64,44 @@ def arg_str_to_bool(v: str) -> bool:
 def list_audio_devices() -> None:
     """List all available audio output devices."""
     try:
-        from sendspin.audio import query_devices
+        from sendspin.audio_devices import query_devices
     except OSError as e:
         if "PortAudio library not found" in str(e):
             print(PORTAUDIO_NOT_FOUND_MESSAGE)
             sys.exit(1)
         raise
 
+    from sendspin.audio_devices import list_alsa_devices
+
     try:
         devices = query_devices()
+    except OSError as e:
+        if "PortAudio library not found" in str(e):
+            print(PORTAUDIO_NOT_FOUND_MESSAGE)
+            sys.exit(1)
+        raise
 
-        print("Available audio output devices:")
-        print()
-        for device in devices:
-            default_marker = " (default)" if device.is_default else ""
-            print(
-                f"  [{device.index}] {device.name}{default_marker}\n"
-                f"       Channels: {device.output_channels}, "
-                f"Sample rate: {device.sample_rate} Hz"
-            )
-        if devices:
-            print("\nTo select an audio device:\n  sendspin --audio-device 0")
+    print("Available audio output devices:")
+    print()
+    for device in devices:
+        default_marker = " (default)" if device.is_default else ""
+        print(
+            f"  [{device.index}] {device.name}{default_marker}\n"
+            f"       Channels: {device.output_channels}, "
+            f"Sample rate: {device.sample_rate} Hz"
+        )
+    if devices:
+        print(f"\nTo select an audio device:\n  sendspin --audio-device {devices[0].index}")
 
-    except Exception as e:  # noqa: BLE001
-        print(f"Error listing audio devices: {e}")
-        sys.exit(1)
+    if sys.platform.startswith("linux"):
+        alsa_devices = list_alsa_devices()
+        if alsa_devices:
+            print("\nALSA devices (use by name with --audio-device):")
+            print()
+            for name, description in alsa_devices:
+                print(f"  {name}")
+                if description:
+                    print(f"       {description}")
 
 
 def _add_player_runtime_options(target: ArgumentTarget, *, suppress_defaults: bool = False) -> None:
@@ -128,8 +141,9 @@ def _add_player_runtime_options(target: ArgumentTarget, *, suppress_defaults: bo
         type=str,
         default=default,
         help=(
-            "Audio output device by index (e.g., 0, 1, 2) or name prefix (e.g., 'MacBook'). "
-            "Use --list-audio-devices to see available devices."
+            "Audio output device by index (e.g., 0, 1, 2), name prefix (e.g., 'MacBook'), "
+            "or raw ALSA device name (e.g., 'dmixer', 'olohuone') for plugin devices like dmix. "
+            "Use --list-audio-devices to see enumerated devices."
         ),
     )
     target.add_argument(
@@ -451,39 +465,6 @@ class CLIError(Exception):
         self.exit_code = exit_code
 
 
-def _resolve_audio_device(device_arg: str | None) -> AudioDevice:
-    """Resolve audio device from CLI argument.
-
-    Args:
-        device_arg: Device specifier (index number, name prefix, or None for default).
-
-    Returns:
-        The resolved AudioDevice.
-
-    Raises:
-        CLIError: If the device cannot be found.
-    """
-    from sendspin.audio import query_devices
-
-    devices = query_devices()
-
-    # Find device by: default, index, or name prefix
-    if device_arg is None:
-        device = next((d for d in devices if d.is_default), None)
-    elif device_arg.isnumeric():
-        device_id = int(device_arg)
-        device = next((d for d in devices if d.index == device_id), None)
-    else:
-        device = next((d for d in devices if d.name.startswith(device_arg)), None)
-
-    if device is None:
-        kind = "Default" if device_arg is None else "Specified"
-        raise CLIError(f"{kind} audio device not found.")
-
-    LOGGER.info("Using audio device %d: %s", device.index, device.name)
-    return device
-
-
 def _resolve_client_info(client_id: str | None, client_name: str | None) -> tuple[str, str]:
     """Determine client ID and name, using hostname as fallback."""
     if client_id is not None and client_name is not None:
@@ -499,35 +480,21 @@ def _resolve_client_info(client_id: str | None, client_name: str | None) -> tupl
     )
 
 
-def _resolve_audio_format(
+def _resolve_preferred_format(
     format_arg: str | None, device: AudioDevice
 ) -> SupportedAudioFormat | None:
-    """Parse and validate a preferred audio format against the audio device.
-
-    Args:
-        format_arg: Format string (e.g., "flac:48000:24:2") or None.
-        device: The resolved audio device to validate against.
-
-    Returns:
-        The parsed SupportedAudioFormat, or None if no format was specified.
-
-    Raises:
-        CLIError: If the format string is invalid or unsupported by the device.
-    """
+    """Resolve the preferred audio format, if specified."""
     if format_arg is None:
         return None
 
-    from sendspin.audio import parse_audio_format, validate_audio_format
+    from sendspin.audio_devices import parse_audio_format, validate_audio_format
 
-    try:
-        fmt = parse_audio_format(format_arg)
-    except ValueError as e:
-        raise CLIError(str(e)) from None
+    fmt = parse_audio_format(format_arg)
 
-    if not validate_audio_format(fmt, device.index):
-        raise CLIError(
+    if not validate_audio_format(fmt, device):
+        raise ValueError(
             f"Audio format '{format_arg}' is not supported by device "
-            f"'{device.name}' (index {device.index})."
+            f"'{device.name}' ({device.device_id})."
         )
 
     LOGGER.info("Using preferred audio format: %s", format_arg)
@@ -595,7 +562,7 @@ async def _run_daemon_mode(
         static_delay_ms=args.static_delay_ms,
         listen_port=args.listen_port,
         use_mpris=args.use_mpris,
-        preferred_format=_resolve_audio_format(args.audio_format, audio_device),
+        preferred_format=_resolve_preferred_format(args.audio_format, audio_device),
         volume_controller=volume_controller,
         hook_start=args.hook_start,
         hook_stop=args.hook_stop,
@@ -639,6 +606,9 @@ def main() -> int:
     except CLIError as e:
         print(f"Error: {e}")
         return e.exit_code
+    except ValueError as e:
+        print(f"Error: {e}")
+        return 1
     except OSError as e:
         if "PortAudio library not found" in str(e):
             print(PORTAUDIO_NOT_FOUND_MESSAGE)
@@ -648,6 +618,8 @@ def main() -> int:
 
 async def _run_client_mode(args: argparse.Namespace) -> int:
     """Run the client in TUI or daemon mode."""
+    from sendspin.audio_devices import resolve_audio_device
+
     # Handle deprecated --headless flag early so all downstream logic
     # can simply check args.command == "daemon".
     if getattr(args, "headless", False):
@@ -711,7 +683,7 @@ async def _run_client_mode(args: argparse.Namespace) -> int:
         handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
         logging.basicConfig(level=log_level, handlers=[handler])
 
-    audio_device = _resolve_audio_device(args.audio_device)
+    audio_device = resolve_audio_device(args.audio_device)
 
     volume_controller: VolumeController | None = None
     if args.hook_set_volume:
@@ -757,7 +729,7 @@ async def _run_client_mode(args: argparse.Namespace) -> int:
         settings=settings,
         static_delay_ms=args.static_delay_ms,
         use_mpris=args.use_mpris,
-        preferred_format=_resolve_audio_format(args.audio_format, audio_device),
+        preferred_format=_resolve_preferred_format(args.audio_format, audio_device),
         volume_controller=volume_controller,
         hook_start=args.hook_start,
         hook_stop=args.hook_stop,

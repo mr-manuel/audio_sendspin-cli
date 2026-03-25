@@ -3,9 +3,6 @@
 This module provides an AudioPlayer that handles time-synchronized audio playback
 with DAC-level timing precision. It manages buffering, scheduled start times,
 and sync error correction to maintain sync between server and client timelines.
-
-This module also provides device enumeration utilities for listing and resolving
-audio output devices.
 """
 
 from __future__ import annotations
@@ -22,9 +19,9 @@ from typing import TYPE_CHECKING, Final, Protocol, cast
 
 import sounddevice
 from aiosendspin.client.time_sync import SendspinTimeFilter
-from aiosendspin.models.player import SupportedAudioFormat
-from aiosendspin.models.types import AudioCodec
 from sounddevice import CallbackFlags
+
+from sendspin.audio_devices import SOUNDDEVICE_DTYPE_MAP, AudioDevice
 
 try:
     from sendspin._volume import apply_volume as _c_apply_volume
@@ -39,206 +36,6 @@ if TYPE_CHECKING:
     from aiosendspin.client import AudioFormat, PCMFormat
 
 logger = logging.getLogger(__name__)
-
-
-SOUNDDEVICE_DTYPE_MAP = {
-    16: "int16",
-    24: "int24",
-    32: "int32",
-}
-
-
-@dataclass(slots=True)
-class AudioDevice:
-    """Represents an audio output device.
-
-    Attributes:
-        index: Device index used for selection.
-        name: Human-readable device name.
-        output_channels: Number of output channels supported.
-        sample_rate: Default sample rate in Hz.
-        is_default: Whether this is the system default output device.
-    """
-
-    index: int
-    name: str
-    output_channels: int
-    sample_rate: float
-    is_default: bool
-
-
-def query_devices() -> list[AudioDevice]:
-    """Query all available audio output devices.
-
-    Returns:
-        List of AudioDevice objects for devices with output channels.
-    """
-    devices = sounddevice.query_devices()
-    default_output = int(sounddevice.default.device[1])
-
-    result: list[AudioDevice] = []
-    for i in range(len(devices)):
-        dev = devices[i]
-        if dev["max_output_channels"] > 0:
-            result.append(
-                AudioDevice(
-                    index=i,
-                    name=str(dev["name"]),
-                    output_channels=int(dev["max_output_channels"]),
-                    sample_rate=float(dev["default_samplerate"]),
-                    is_default=(i == default_output),
-                )
-            )
-    return result
-
-
-def _check_format(device: int | None, rate: int, channels: int, dtype: str) -> bool:
-    """Check if a specific audio format is supported by the device."""
-    try:
-        sounddevice.check_output_settings(
-            device=device, samplerate=rate, channels=channels, dtype=dtype
-        )
-        return True
-    except sounddevice.PortAudioError:
-        return False
-
-
-def detect_supported_audio_formats(
-    device: int | None = None,
-) -> list[SupportedAudioFormat]:
-    """Detect supported audio formats by testing dimensions independently.
-
-    Tests sample rates, bit depths, and channels separately then creates the
-    cartesian product. This assumes that if individual dimensions work, their
-    combinations will too (valid for PulseAudio/PipeWire which handle conversion).
-
-    Returns formats for both PCM (raw) and FLAC (compressed) codecs. FLAC formats
-    are preferred and listed first since they reduce bandwidth. FLAC decoding is
-    done client-side before playback.
-
-    Args:
-        device: Audio device ID. None for default device.
-
-    Returns:
-        List of supported audio formats, with FLAC formats first (preferred).
-    """
-    sample_rates = [48000, 44100, 96000, 192000]
-    bit_depths = [24, 16]
-    channel_counts = [2, 1]
-
-    # Test each dimension independently
-    supported_rates = [r for r in sample_rates if _check_format(device, r, 2, "int16")]
-    supported_depths = [
-        d for d in bit_depths if _check_format(device, 48000, 2, SOUNDDEVICE_DTYPE_MAP[d])
-    ]
-    supported_channels = [c for c in channel_counts if _check_format(device, 48000, c, "int16")]
-
-    # Build formats for both FLAC (preferred) and PCM
-    # FLAC is preferred as it reduces bandwidth while maintaining lossless quality
-    supported: list[SupportedAudioFormat] = []
-
-    # Add FLAC formats first (preferred)
-    for depth in supported_depths:
-        for rate in supported_rates:
-            for ch in supported_channels:
-                supported.append(
-                    SupportedAudioFormat(
-                        codec=AudioCodec.FLAC, channels=ch, sample_rate=rate, bit_depth=depth
-                    )
-                )
-
-    # Add PCM formats as fallback
-    for depth in supported_depths:
-        for rate in supported_rates:
-            for ch in supported_channels:
-                supported.append(
-                    SupportedAudioFormat(
-                        codec=AudioCodec.PCM, channels=ch, sample_rate=rate, bit_depth=depth
-                    )
-                )
-
-    if not supported:
-        logger.warning("Could not detect supported formats, using safe defaults")
-        supported = [
-            SupportedAudioFormat(
-                codec=AudioCodec.FLAC, channels=2, sample_rate=44100, bit_depth=16
-            ),
-            SupportedAudioFormat(codec=AudioCodec.PCM, channels=2, sample_rate=44100, bit_depth=16),
-        ]
-
-    logger.info("Detected %d supported audio formats (FLAC + PCM)", len(supported))
-    return supported
-
-
-def parse_audio_format(format_str: str) -> SupportedAudioFormat:
-    """Parse an audio format string into a SupportedAudioFormat.
-
-    Format: ``codec:sample_rate:bit_depth:channels``
-    Example: ``flac:48000:24:2``
-
-    Args:
-        format_str: The format string to parse.
-
-    Returns:
-        A SupportedAudioFormat matching the specification.
-
-    Raises:
-        ValueError: If the format string is invalid.
-    """
-    parts = format_str.lower().split(":")
-    if len(parts) != 4:
-        raise ValueError(
-            f"Invalid audio format '{format_str}'. "
-            "Expected format: codec:sample_rate:bit_depth:channels (e.g., flac:48000:24:2)"
-        )
-
-    codec_str, rate_str, depth_str, channels_str = parts
-
-    if codec_str == "flac":
-        codec = AudioCodec.FLAC
-    elif codec_str == "pcm":
-        codec = AudioCodec.PCM
-    else:
-        raise ValueError(f"Unknown codec '{codec_str}'. Supported codecs: flac, pcm")
-
-    try:
-        sample_rate = int(rate_str)
-    except ValueError:
-        raise ValueError(f"Invalid sample rate '{rate_str}'. Expected an integer.") from None
-
-    try:
-        bit_depth = int(depth_str)
-    except ValueError:
-        raise ValueError(f"Invalid bit depth '{depth_str}'. Expected an integer.") from None
-
-    try:
-        channels = int(channels_str)
-    except ValueError:
-        raise ValueError(f"Invalid channel count '{channels_str}'. Expected an integer.") from None
-
-    return SupportedAudioFormat(
-        codec=codec, channels=channels, sample_rate=sample_rate, bit_depth=bit_depth
-    )
-
-
-def validate_audio_format(fmt: SupportedAudioFormat, device: int | None) -> bool:
-    """Validate that an audio format's PCM dimensions are supported by the device.
-
-    Checks sample rate, bit depth, and channel count independently against the
-    audio device (matching the approach used by detect_supported_audio_formats).
-
-    Args:
-        fmt: The audio format to validate.
-        device: Audio device ID. None for default device.
-
-    Returns:
-        True if the device supports the format dimensions.
-    """
-    dtype = SOUNDDEVICE_DTYPE_MAP.get(fmt.bit_depth)
-    if dtype is None:
-        return False
-
-    return _check_format(device, fmt.sample_rate, fmt.channels, dtype)
 
 
 class AudioTimeInfo(Protocol):
@@ -453,7 +250,7 @@ class AudioPlayer:
             blocksize=self._BLOCKSIZE,
             callback=self._audio_callback,
             latency="high",
-            device=device.index,
+            device=device.device_id,
         )
         logger.info(
             "Audio stream configured: codec=%s, sample_rate=%d, channels=%d, bit_depth=%d, blocksize=%d, latency=high, device=%s",
@@ -462,7 +259,7 @@ class AudioPlayer:
             pcm_format.channels,
             pcm_format.bit_depth,
             self._BLOCKSIZE,
-            device,
+            device.device_id,
         )
 
     @property
