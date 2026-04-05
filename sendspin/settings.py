@@ -119,6 +119,8 @@ class ClientSettings(BaseSettings):
     hook_start: str | None = None
     hook_stop: str | None = None
     visualizer: bool = False
+    manufacturer: str | None = None
+    product_name: str | None = None
 
     def update(
         self,
@@ -202,6 +204,8 @@ class ClientSettings(BaseSettings):
             self.hook_start = data.get("hook_start")
             self.hook_stop = data.get("hook_stop")
             self.visualizer = data.get("visualizer", False)
+            self.manufacturer = data.get("manufacturer")
+            self.product_name = data.get("product_name")
             logger.info(
                 "Loaded settings from %s: volume=%d%%, muted=%s",
                 self._settings_file,

@@ -136,7 +136,9 @@ Settings are stored in `~/.config/sendspin/`:
   "listen_port": 8927,
   "use_mpris": true,
   "use_hardware_volume": true,
-  "hook_set_volume": "/usr/local/bin/set-avr-volume"
+  "hook_set_volume": "/usr/local/bin/set-avr-volume",
+  "manufacturer": "Acme Corp",
+  "product_name": "Living Room Speaker"
 }
 ```
 
@@ -170,6 +172,8 @@ Settings are stored in `~/.config/sendspin/`:
 | `hook_set_volume` | string | TUI/daemon | Script to run for external volume control (`--hook-set-volume`). Receives the effective volume 0-100 as the last argument |
 | `hook_start` | string | TUI/daemon | Command to run when audio stream starts |
 | `hook_stop` | string | TUI/daemon | Command to run when audio stream stops |
+| `manufacturer` | string | TUI/daemon | Manufacturer name reported in the client hello (`--manufacturer`) |
+| `product_name` | string | TUI/daemon | Product name reported in the client hello (`--product-name`); defaults to auto-detected OS/platform name |
 | `source` | string | serve | Default audio source (file path or URL, ffmpeg input) |
 | `source_format` | string | serve | ffmpeg container format for audio source |
 | `clients` | array | serve | Client URLs to connect to (`--client`) |
@@ -303,6 +307,12 @@ sendspin daemon --name "Kitchen" --audio-device 2
 ```
 
 In daemon mode without `--url`, the client listens for incoming server connections and advertises itself via mDNS. The `--name` option (or `name` setting) is used as the friendly name in the mDNS advertisement, making it easy for servers to identify this client on the network.
+
+Use `--manufacturer` and `--product-name` to override the device identity reported to the server in the client hello. This is useful when running the daemon in a container or on a custom device where the auto-detected OS name is not meaningful:
+
+```bash
+sendspin daemon --name "Living Room" --manufacturer "Acme" --product-name "Living Room Speaker"
+```
 
 ### Hooks
 

@@ -52,6 +52,8 @@ class DaemonArgs:
     volume_controller: VolumeController | None = None
     hook_start: str | None = None
     hook_stop: str | None = None
+    manufacturer: str | None = None
+    product_name: str | None = None
 
 
 class SendspinDaemon:
@@ -90,7 +92,10 @@ class SendspinDaemon:
             client_id=self._args.client_id,
             client_name=self._args.client_name,
             roles=client_roles,
-            device_info=get_device_info(),
+            device_info=get_device_info(
+                manufacturer=self._args.manufacturer,
+                product_name=self._args.product_name,
+            ),
             player_support=ClientHelloPlayerSupport(
                 supported_formats=supported_formats,
                 buffer_capacity=32_000_000,

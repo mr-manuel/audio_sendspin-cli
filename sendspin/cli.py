@@ -169,6 +169,18 @@ def _add_player_runtime_options(target: ArgumentTarget, *, suppress_defaults: bo
         help="Enable or disable hardware/system volume control (daemon: on, TUI: off)",
     )
     target.add_argument(
+        "--manufacturer",
+        type=str,
+        default=default,
+        help="Manufacturer name reported in the client hello (e.g., 'Acme Corp')",
+    )
+    target.add_argument(
+        "--product-name",
+        type=str,
+        default=default,
+        help="Product name reported in the client hello (defaults to auto-detected OS/platform name)",
+    )
+    target.add_argument(
         "--hook-start",
         type=str,
         default=default,
@@ -393,6 +405,18 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Command to run when audio stream stops (receives SENDSPIN_* env vars)",
     )
+    daemon_parser.add_argument(
+        "--manufacturer",
+        type=str,
+        default=None,
+        help="Manufacturer name reported in the client hello (e.g., 'Acme Corp')",
+    )
+    daemon_parser.add_argument(
+        "--product-name",
+        type=str,
+        default=None,
+        help="Product name reported in the client hello (defaults to auto-detected OS/platform name)",
+    )
 
     return parser
 
@@ -566,6 +590,8 @@ async def _run_daemon_mode(
         volume_controller=volume_controller,
         hook_start=args.hook_start,
         hook_stop=args.hook_stop,
+        manufacturer=args.manufacturer,
+        product_name=args.product_name,
     )
 
     daemon = SendspinDaemon(daemon_args)
@@ -670,6 +696,10 @@ async def _run_client_mode(args: argparse.Namespace) -> int:
         args.hook_start = settings.hook_start
     if args.hook_stop is None:
         args.hook_stop = settings.hook_stop
+    if args.manufacturer is None:
+        args.manufacturer = settings.manufacturer
+    if args.product_name is None:
+        args.product_name = settings.product_name
 
     # Set up logging: daemon uses stderr, TUI writes to sendspin.log
     # so log output doesn't interfere with the Rich display.
@@ -733,6 +763,8 @@ async def _run_client_mode(args: argparse.Namespace) -> int:
         volume_controller=volume_controller,
         hook_start=args.hook_start,
         hook_stop=args.hook_stop,
+        manufacturer=args.manufacturer,
+        product_name=args.product_name,
     )
 
     app = SendspinApp(app_args)

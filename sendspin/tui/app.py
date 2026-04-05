@@ -228,6 +228,8 @@ class AppArgs:
     volume_controller: VolumeController | None = None
     hook_start: str | None = None
     hook_stop: str | None = None
+    manufacturer: str | None = None
+    product_name: str | None = None
 
 
 class SendspinApp:
@@ -292,7 +294,10 @@ class SendspinApp:
             client_id=args.client_id,
             client_name=args.client_name,
             roles=roles,
-            device_info=get_device_info(),
+            device_info=get_device_info(
+                manufacturer=args.manufacturer,
+                product_name=args.product_name,
+            ),
             player_support=ClientHelloPlayerSupport(
                 supported_formats=self._supported_formats,
                 buffer_capacity=32_000_000,
