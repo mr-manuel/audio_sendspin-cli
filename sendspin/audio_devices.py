@@ -312,22 +312,32 @@ def _try_alsa_device(name: str) -> AudioDevice | None:
 
     This allows using ALSA plugin devices (dmix, plug, etc.) that are not
     enumerated by PortAudio but can be opened by name. This is needed for
-    setups like dual mono where multiple clients share hardware via dmix.
+    setups like dual mono where multiple clients share hardware via dmix,
+    or custom virtual devices defined in asound.conf.
 
     Returns:
         An AudioDevice if the ALSA device could be opened, None otherwise.
     """
+    portaudio_ok = False
     try:
         sounddevice.check_output_settings(device=name)
+        portaudio_ok = True
     except sounddevice.PortAudioError:
-        return None
+        # PortAudio can't verify the device — check if it's a known ALSA device.
+        alsa_names = {dev_name for dev_name, _ in list_alsa_devices()}
+        if name not in alsa_names:
+            return None
 
-    # Try to query device info from PortAudio
-    try:
-        info = sounddevice.query_devices(name, "output")
-        channels = int(info["max_output_channels"])
-        sample_rate = float(info["default_samplerate"])
-    except (sounddevice.PortAudioError, ValueError):
+    if portaudio_ok:
+        # Try to query device info from PortAudio
+        try:
+            info = sounddevice.query_devices(name, "output")
+            channels = int(info["max_output_channels"])
+            sample_rate = float(info["default_samplerate"])
+        except (sounddevice.PortAudioError, ValueError):
+            channels = 2
+            sample_rate = 48000.0
+    else:
         # PortAudio can't enumerate this device — use safe defaults.
         # The actual format is negotiated with the server later.
         channels = 2
