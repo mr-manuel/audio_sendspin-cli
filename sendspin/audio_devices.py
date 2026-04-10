@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -315,17 +316,61 @@ def _try_alsa_device(name: str) -> AudioDevice | None:
     setups like dual mono where multiple clients share hardware via dmix,
     or custom virtual devices defined in asound.conf.
 
+    Args:
+        name: Device specifier (raw ALSA name, e.g., "hw:CARD=sndrpihifiberry,DEV=0",
+              "plughw:CARD=sndrpihifiberry,DEV=0", or simple names like "snd_rpi_hifiberry").
+
     Returns:
         An AudioDevice if the ALSA device could be opened, None otherwise.
     """
+    # Parse PLUGIN:CARD=...,DEV=... format (hw, plughw, dmix, …) into raw ALSA name
+    alsa_name = _parse_hw_format(name)
+
     portaudio_ok = False
     try:
         sounddevice.check_output_settings(device=name)
         portaudio_ok = True
-    except sounddevice.PortAudioError:
+    except (sounddevice.PortAudioError, ValueError):
         # PortAudio can't verify the device — check if it's a known ALSA device.
-        alsa_names = {dev_name for dev_name, _ in list_alsa_devices()}
-        if name not in alsa_names:
+        # ValueError is raised by sounddevice when the name is not found in the
+        # PortAudio device enumeration (e.g. "hw:CARD=sndrpihifiberry,DEV=0").
+        alsa_devices = list_alsa_devices()
+        alsa_names = {dev_name for dev_name, _ in alsa_devices}
+
+        # Check both the original name and parsed ALSA name against known devices
+        if name not in alsa_names and alsa_name not in alsa_names:
+            return None
+
+        # For PLUGIN:CARD=...,DEV=... style names, try to find the matching PortAudio
+        # device via the ALSA description (e.g. "snd_rpi_hifiberry_dacplus, ...").
+        # This avoids a second ValueError when the stream is opened later.
+        description = next(
+            (desc for dev_name, desc in alsa_devices if dev_name in (name, alsa_name) and desc),
+            None,
+        )
+        if alsa_name is not None and description:
+            driver_name = description.split(",")[0].strip()
+            dev_num = alsa_name.split(",")[-1] if alsa_name else None
+            matched = next(
+                (
+                    d for d in query_devices()
+                    if driver_name in d.name
+                    and (
+                        dev_num is None
+                        or re.search(rf"\(hw:\d+,{re.escape(dev_num)}\)", d.name)
+                    )
+                ),
+                None,
+            )
+            if matched:
+                logger.debug("Mapped ALSA device %s to PortAudio device %s", name, matched.name)
+                return matched
+
+        # For PLUGIN:CARD=...,DEV=... style names that PortAudio couldn't find and
+        # that couldn't be mapped via ALSA description, give up. The original name
+        # already failed check_output_settings so passing it to sounddevice for
+        # stream creation would fail in the same way.
+        if alsa_name is not None:
             return None
 
     if portaudio_ok:
@@ -351,3 +396,27 @@ def _try_alsa_device(name: str) -> AudioDevice | None:
         is_default=False,
         alsa_device_name=name,
     )
+
+
+def _parse_hw_format(name: str) -> str | None:
+    """Parse PLUGIN:CARD=...,DEV=... format to extract raw ALSA device name.
+
+    Handles the verbose form emitted by ``aplay -L`` for any ALSA plugin prefix
+    (``hw``, ``plughw``, ``dmix``, etc.).
+
+    Args:
+        name: Device specifier that may be in PLUGIN:CARD=...,DEV=... format.
+
+    Returns:
+        Raw ALSA device name (e.g., "hw:snd-rpi-hifiberry,0") or None if not
+        in PLUGIN:CARD=...,DEV=... format.
+    """
+    # Match formats like: hw:CARD=sndrpihifiberry,DEV=0 or plughw:CARD=...,DEV=...
+    match = re.match(r"^(\w+):CARD=(.+?),DEV=(\d+)$", name)
+    if match:
+        plugin = match.group(1)
+        card_name = match.group(2).replace("_", "-")  # ALSA uses hyphens internally
+        device_num = match.group(3)
+        return f"{plugin}:{card_name},{device_num}"
+
+    return None
