@@ -140,19 +140,25 @@ class AudioPlayer:
         self,
         compute_client_time: Callable[[int], int],
         compute_server_time: Callable[[int], int],
+        now_us: Callable[[], int] | None = None,
     ) -> None:
         """
         Initialize the audio player.
 
         Args:
             compute_client_time: Function that converts server timestamps to client
-                timestamps (monotonic loop time), accounting for clock drift, offset,
+                timestamps (monotonic clock time), accounting for clock drift, offset,
                 and static delay.
             compute_server_time: Function that converts client timestamps (monotonic
-                loop time) to server timestamps (inverse of compute_client_time).
+                clock time) to server timestamps. Pure clock-domain conversion
+                without static delay adjustment.
+            now_us: Function returning current monotonic time in microseconds.
+                Must be in the same clock domain as compute_client_time.
+                Defaults to time.monotonic().
         """
         self._compute_client_time = compute_client_time
         self._compute_server_time = compute_server_time
+        self._now_us = now_us or (lambda: int(time.monotonic() * 1_000_000))
         self._format: PCMFormat | None = None
         self._queue: queue.Queue[_QueuedChunk] = queue.Queue()
         self._stream: sounddevice.RawOutputStream | None = None
@@ -287,6 +293,20 @@ class AudioPlayer:
         """
         self._volume = max(0, min(100, volume))
         self._muted = muted
+
+    def apply_delay_change(self, delta_us: int) -> None:
+        """Adjust playback timing after a static delay change.
+
+        Offsets the server timestamp cursor so the sync correction mechanism
+        gradually speeds up or slows down playback to match the new delay.
+        This avoids clearing the audio buffer (which the server won't resend).
+
+        Args:
+            delta_us: Delay change in microseconds (positive = delay increased,
+                audio should play earlier, cursor shifts back).
+        """
+        if self._server_ts_cursor_us > 0:
+            self._server_ts_cursor_us -= delta_us
 
     def is_drained(self) -> bool:
         """Return True when the internal audio queue is empty.
@@ -557,11 +577,10 @@ class AudioPlayer:
                 logger.exception("Failed to estimate playback position")
 
             # If we haven't set the DAC-anchored start yet, approximate it now
-            if self._scheduled_start_dac_time_us is None and self._scheduled_start_loop_time_us:
+            if self._scheduled_start_dac_time_us is None and self._first_server_timestamp_us:
                 try:
-                    loop_start = self._scheduled_start_loop_time_us
                     est_dac = self._estimate_dac_time_for_server_timestamp(
-                        self._compute_server_time(loop_start)
+                        self._first_server_timestamp_us
                     )
                     if est_dac:
                         self._scheduled_start_dac_time_us = est_dac
@@ -785,11 +804,6 @@ class AudioPlayer:
     def _get_current_playback_position_us(self) -> int:
         """Get the current playback position in server timestamp space."""
         return self._last_known_playback_position_us
-
-    @staticmethod
-    def _now_us() -> int:
-        """Return current monotonic time in microseconds."""
-        return int(time.monotonic() * 1_000_000)
 
     def get_timing_metrics(self) -> dict[str, float]:
         """Return current timing metrics for monitoring."""
