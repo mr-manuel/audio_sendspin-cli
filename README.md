@@ -106,7 +106,7 @@ pip install --upgrade sendspin
 sudo systemctl restart sendspin
 ```
 
-Your client name, audio device selection, and other settings in `/etc/default/sendspin` are preserved during the update.
+Your client name, audio device selection, and other settings in `~/.config/sendspin/settings-daemon.json` are preserved during the update.
 
 > **Note:** You do **not** need to uninstall and reinstall when updating. Your configuration (client name, audio device, delay settings) is stored separately and will be preserved.
 
@@ -395,7 +395,7 @@ sudo systemctl status sendspin   # Check status
 journalctl -u sendspin -f        # View logs
 ```
 
-**Configuration:** Edit `/etc/default/sendspin` to change client name, audio device, or delay settings.
+**Configuration:** Edit `~/.config/sendspin/settings-daemon.json` to change client name, audio device, or other settings.
 
 **Uninstall:**
 ```bash
